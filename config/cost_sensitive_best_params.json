@@ -1,0 +1,6 @@
+{
+    "min_samples_leaf": 15,
+    "max_depth": 5,
+    "pruned": true,
+    "min_gain": 0.001
+}

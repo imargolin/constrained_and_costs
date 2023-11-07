@@ -1,0 +1,2 @@
+costcla==0.6
+ipykernel

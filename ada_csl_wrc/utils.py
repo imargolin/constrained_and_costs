@@ -2,6 +2,10 @@ import pandas as pd
 import numpy as np
 from sklearn.feature_selection import mutual_info_classif
 from abc import ABC, abstractmethod
+
+#import Union for type hinting
+from typing import Union
+
 print(f"loaded {__name__}")
 
 def _prediction_up_to_constraint(y_pred_probs,constraint):
@@ -76,10 +80,15 @@ def _get_dynamic_threshold(y_pred_probs,constraint, t):
     return dynamic_t
 
 def prediction_up_to_constraint(y_pred: np.ndarray, 
-                                constraint: float):
-    
-    assert 0 <= constraint <= 1.0, "constraint must be a number between 0 and 1"
-    constraint = int(len(y_pred) * constraint) # number of positive instances that we want to predict
+                                #The constraint could be either float or int
+                                constraint: Union[float, int]):
+
+    if isinstance(constraint, int):
+        assert constraint >= 1, "constraint must be a positive integer"
+
+    if isinstance(constraint, float):
+        assert 0 <= constraint <= 1.0, "constraint must be a number between 0 and 1"
+        constraint = int(len(y_pred) * constraint) # number of positive instances that we want to predict
 
     out = pd.Series(y_pred) # convert to pandas series
     n_largest = out.nlargest(constraint).index # n largest indices

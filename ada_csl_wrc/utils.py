@@ -82,13 +82,8 @@ def _get_dynamic_threshold(y_pred_probs,constraint, t):
 def prediction_up_to_constraint(y_pred: np.ndarray, 
                                 #The constraint could be either float or int
                                 constraint: Union[float, int]):
-
-    if isinstance(constraint, int):
-        assert constraint >= 1, "constraint must be a positive integer"
-
-    if isinstance(constraint, float):
-        assert 0 <= constraint <= 1.0, "constraint must be a number between 0 and 1"
-        constraint = int(len(y_pred) * constraint) # number of positive instances that we want to predict
+    
+    constraint = _validate_constraint(constraint, len(y_pred))
 
     out = pd.Series(y_pred) # convert to pandas series
     n_largest = out.nlargest(constraint).index # n largest indices
@@ -96,7 +91,7 @@ def prediction_up_to_constraint(y_pred: np.ndarray,
     return out
 
 def get_dynamic_threshold(y_preds_prob: np.ndarray, 
-                          constraint: float, 
+                          constraint: Union[int, float], 
                           t: float):
     """
     Explanation about the function:
@@ -105,9 +100,8 @@ def get_dynamic_threshold(y_preds_prob: np.ndarray,
     t: the original threshold.
     """
 
-    assert 0 <= constraint <= 1.0, "constraint must be a number between 0 and 1"
+    constraint = _validate_constraint(constraint, len(y_preds_prob))
     assert 0 <= t <= 1.0, "t must be a number between 0 and 1"
-    constraint = int(len(y_preds_prob) * constraint) # number of positive instances that we want to predict
 
     y_preds_prob = pd.Series(y_preds_prob)
     y_preds_prob = y_preds_prob[y_preds_prob>=t]
@@ -121,7 +115,7 @@ def get_dynamic_threshold(y_preds_prob: np.ndarray,
     return dynamic_t
 
 def find_effective_threshold(y_preds_prob: np.ndarray, 
-                             constraint: float, 
+                             constraint: Union[float, int], 
                              t: float):
     
     assert 0 <= constraint <= 1.0, "constraint must be a number between 0 and 1"
@@ -161,3 +155,14 @@ def filter_only_worst_features(X: pd.DataFrame,
     q = mutual_info.quantile(features_ratio) #The quantile we want to keep
     X_out = X.loc[:, mutual_info<=q]
     return X_out
+
+def _validate_constraint(constraint: Union[float, int], 
+                         size: int) -> int:
+    
+    if isinstance(constraint, int):
+        assert constraint >= 1, "constraint must be a positive integer"
+    
+    if isinstance(constraint, float):
+        assert 0 <= constraint <= 1.0, "constraint must be a number between 0 and 1"
+        constraint = int(size * constraint)
+    return constraint

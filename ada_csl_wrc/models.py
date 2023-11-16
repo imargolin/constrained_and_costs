@@ -689,7 +689,7 @@ class ConstrainedCSDecisionTree(BaseEstimator):
                  tolerance: float=1.0,
                  **model_params):
 
-        assert 0<=constraint<=1, "Constraint must be between 0 and 1"
+        #assert 0<=constraint<=1, "Constraint must be between 0 and 1"
 
         self.constraint = constraint
         self.num_iterations = num_iterations

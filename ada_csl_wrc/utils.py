@@ -166,3 +166,31 @@ def _validate_constraint(constraint: Union[float, int],
         assert 0 <= constraint <= 1.0, "constraint must be a number between 0 and 1"
         constraint = int(size * constraint)
     return constraint
+
+def benchmark_algorithm(y_pred: pd.Series,
+                        provider_ids: pd.Series, 
+                        constraint: Constraint):
+    # y_test: the true labels
+    # y_pred: the predict probabilities
+    # provider_id: the provider id for each row
+    # constraints: the constraints dictionary, should be relative constraints.
+    #value counts provider ids
+    df = pd.DataFrame({"y_pred": y_pred, "provider_id": provider_ids})
+
+    provider_counts = df["provider_id"].value_counts().to_dict()
+    
+    if isinstance(constraint, RelativeConstraint):
+        constraint = constraint.convert_to_absolute(provider_counts)
+
+    budget = constraint.as_budget() #We start with the absolute constraints
+
+    df["outputs"] = 0 #We start with all zeros
+    
+    #iterate the dataframe, from the highest to the lowest probability
+    for i, row in df.sort_values(by="y_pred", ascending=False).iterrows():
+        group_id = row["provider_id"]
+        if budget.has_enough(group_id) and row["y_pred"]>=0.5:
+            budget.pay(group_id)
+            df.loc[i, "outputs"] = 1 
+
+    return df

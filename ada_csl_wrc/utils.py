@@ -1,12 +1,14 @@
 import pandas as pd
 import numpy as np
-from sklearn.feature_selection import mutual_info_classif
 from abc import ABC, abstractmethod
-
-#import Union for type hinting
 from typing import Union
 
-print(f"loaded {__name__}")
+from sklearn.feature_selection import mutual_info_classif
+
+from .classes import Constraint, AbsoluteConstraint, RelativeConstraint, Budget
+from .logger import get_logger
+from .logger import RED, GREEN, YELLOW, BLUE, MAGENTA, CYAN, END
+logger = get_logger(__name__)
 
 def _prediction_up_to_constraint(y_pred_probs,constraint):
     D={}
@@ -168,19 +170,30 @@ def _validate_constraint(constraint: Union[float, int],
     return constraint
 
 def benchmark_algorithm(y_pred: pd.Series,
-                        provider_ids: pd.Series, 
+                        group_ids: pd.Series | None, 
                         constraint: Constraint):
     # y_test: the true labels
     # y_pred: the predict probabilities
     # provider_id: the provider id for each row
     # constraints: the constraints dictionary, should be relative constraints.
     #value counts provider ids
-    df = pd.DataFrame({"y_pred": y_pred, "provider_id": provider_ids})
 
-    provider_counts = df["provider_id"].value_counts().to_dict()
+    if isinstance(y_pred, np.ndarray):
+        y_pred = pd.Series(y_pred)
     
+    #assert unique index in y_pred and group ids
+    assert y_pred.index.is_unique, "y_pred must have unique index"
+    if group_ids is not None:
+        if isinstance(group_ids, np.ndarray):
+            group_ids = pd.Series(group_ids)
+        assert group_ids.index.is_unique, "group_ids must have unique index"
+        assert len(group_ids) == len(y_pred), "group_ids and y_pred must have the same length"
+        assert all(group_ids.index == y_pred.index), "group_ids and y_pred must have the same index"
+
+    df = pd.DataFrame({"y_pred": y_pred, "group_ids": group_ids})
     if isinstance(constraint, RelativeConstraint):
-        constraint = constraint.convert_to_absolute(provider_counts)
+        group_counts = df["group_ids"].value_counts(dropna=False).to_dict()
+        constraint = constraint.convert_to_absolute(group_counts)
 
     budget = constraint.as_budget() #We start with the absolute constraints
 
@@ -188,9 +201,53 @@ def benchmark_algorithm(y_pred: pd.Series,
     
     #iterate the dataframe, from the highest to the lowest probability
     for i, row in df.sort_values(by="y_pred", ascending=False).iterrows():
-        group_id = row["provider_id"]
+        group_id = row["group_ids"]
         if budget.has_enough(group_id) and row["y_pred"]>=0.5:
             budget.pay(group_id)
             df.loc[i, "outputs"] = 1 
 
-    return df
+    return df["outputs"].values
+
+def is_satisfy_constraint(
+        y_pred: pd.Series, 
+        constraint: Constraint, 
+        group_ids: pd.Series | None=None) -> bool:
+    """
+    y_pred: decisions of the classifier
+    group_ids: group ids of the instances
+    constraint: the constraint that we want to satisfy
+    """
+
+    if isinstance(y_pred, np.ndarray):
+        y_pred = pd.Series(y_pred)
+    
+    #assert unique index in y_pred and group ids
+    assert y_pred.index.is_unique, "y_pred must have unique index"
+    if group_ids is not None:
+        if isinstance(group_ids, np.ndarray):
+            group_ids = pd.Series(group_ids)
+        assert group_ids.index.is_unique, "group_ids must have unique index"
+        assert len(group_ids) == len(y_pred), "group_ids and y_pred must have the same length"
+        assert all(group_ids.index == y_pred.index), "group_ids and y_pred must have the same index"
+    
+    df = pd.DataFrame({"y_pred": y_pred, "group_ids": group_ids})
+    
+    group_counts = df["group_ids"].value_counts(dropna=False).to_dict()
+    constraint = constraint.convert_to_absolute(group_counts)
+
+    #Validating the constraint
+    if y_pred.sum() > constraint.global_constraint:
+        return False
+    if constraint.local_constraints is not None:
+        for group in constraint.local_constraints:
+            if df[df["group_ids"]==group]["y_pred"].sum() > constraint.local_constraints[group]:
+                return False
+    return True
+
+
+def say_hello():
+    logger.debug("debug message")
+    logger.info("info message")
+    logger.warning("warning message")
+    logger.error("error message")
+    logger.critical("critical message")    

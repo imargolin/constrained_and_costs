@@ -1,4 +1,8 @@
+from __future__ import annotations
+
 from abc import ABC, abstractmethod
+
+
 
 class Constraint(ABC):
     def __init__(self, global_constraint, local_constraints):
@@ -16,6 +20,9 @@ class Constraint(ABC):
             out["local_constraints"] = self.local_constraints
         
         return out
+
+    def is_satisfied(self):
+        raise NotImplementedError("is_satisfied method must be implemented in the child class")
 
 class AbsoluteConstraint(Constraint):
     def __init__(self, 
@@ -52,10 +59,12 @@ class AbsoluteConstraint(Constraint):
             for group in self.local_constraints:
                 assert self.local_constraints[group] >= 0, "Local constraints must be non-negative"
     
-    def as_budget(self):
+    def as_budget(self)-> Budget:
         return Budget(**self.to_dict())
-        
     
+    def convert_to_absolute(self, group_counts):
+        return self
+            
 class RelativeConstraint(Constraint):
     def __init__(self, 
                  global_constraint: float, 
@@ -90,6 +99,9 @@ class RelativeConstraint(Constraint):
         if self.local_constraints is not None:
             assert all([self.local_constraints[group] >= 0 for group in self.local_constraints]), "Local constraints must be between 0 and 1"
             assert all([self.local_constraints[group] <= 1.0 for group in self.local_constraints]), "Local constraints must be between 0 and 1"
+
+    def convert_to_relative(self, group_counts):
+        return self
 
 class Budget:
     def __init__(self, 

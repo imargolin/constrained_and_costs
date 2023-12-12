@@ -1,22 +1,32 @@
+
 """
 This module include the cost sensitive decision tree method.
 """
-
-# Authors: Alejandro Correa Bahnsen <al.bahnsen@gmail.com>
-# License: BSD 3 clause
+from __future__ import annotations
 
 import numpy as np
+import pandas as pd
 import copy
-from .metrics import cost_loss
-from .utils import prediction_up_to_constraint, get_dynamic_threshold, prepare_for_cost_cle, find_effective_threshold
-from sklearn.base import BaseEstimator, ClassifierMixin
-from sklearn.tree import DecisionTreeClassifier
-import six
-import numbers
-from copy import deepcopy
-from tqdm import trange
 import sys
 import time
+
+from tqdm import trange
+import six
+import numbers
+from sklearn.base import BaseEstimator, ClassifierMixin
+from sklearn.tree import DecisionTreeClassifier
+
+from .metrics import cost_loss
+from .utils import prediction_up_to_constraint, get_dynamic_threshold, prepare_for_cost_cle, find_effective_threshold
+from .utils import is_satisfy_constraint
+
+from .classes import Constraint, RelativeConstraint
+from .logger import get_logger
+
+from xgboost import XGBClassifier
+
+logger = get_logger(__name__)
+logger.setLevel("INFO")
 
 
 class CostSensitiveDecisionTreeClassifier(BaseEstimator):
@@ -748,7 +758,7 @@ class ConstrainedCSDecisionTree(BaseEstimator):
                 lower_bound = cfp
                 cfp = (cfp+upper_bound)/2
             
-        self.best_model_ = deepcopy(model_i) #This one is already trained.
+        self.best_model_ = copy.deepcopy(model_i) #This one is already trained.
         self.cfp_ = cfp
         self.threshold_ = threshold
         
@@ -807,7 +817,7 @@ class Constrained(BaseEstimator):
         self.model = model
     
     def fit(self, X, y=None, **fit_params):
-        self.model_ = deepcopy(self.model)
+        self.model_ = copy.deepcopy(self.model)
         self.model_.fit(X, y, **fit_params) #The trained object is stored in self.model_
         return self
     
@@ -822,3 +832,67 @@ class Constrained(BaseEstimator):
                             constraint: float) -> np.ndarray:
         y_pred = self.predict_proba(X)[:, 1]
         return prediction_up_to_constraint(y_pred, constraint)
+    
+class ConstrainedXGB(BaseEstimator):
+    def __init__(self, base_estimator: XGBClassifier, constraint: Constraint, tolerance: float=0.0001):
+        self.base_estimator = base_estimator
+        self.constraint = constraint
+        self.tolerance = tolerance
+        self.history = []
+
+    def fit(self, X, y, X_test, **fit_params) -> ConstrainedXGB:
+        is_satisfied = False
+        constraint = self.constraint.convert_to_absolute({None: len(X_test)})
+        scale_pos_weight = 1
+        #Checking if the constraint is binding
+        is_binding = self.is_binding(X, y, X_test)
+        if is_binding:
+            #The constraint is binding, we need to find the scale_pos_weight
+            upper_bound = 1
+            lower_bound = 0
+            total_positives = -1
+            #The constraint is binding, we need to find the scale_pos_weight
+
+            while total_positives != constraint.global_constraint:
+                estimator = copy.deepcopy(self.base_estimator)
+                estimator.set_params(scale_pos_weight=scale_pos_weight)
+                estimator.fit(X, y, **fit_params)
+                y_pred = estimator.predict(X_test)
+                total_positives = np.sum(y_pred)
+                is_satisfied = is_satisfy_constraint(y_pred, self.constraint)
+                self.history.append(
+                    {"scale_pos_weight": scale_pos_weight, 
+                     "total_positives": total_positives, 
+                     "is_satisfied": is_satisfied, 
+                     "estimator": estimator})
+                
+                if total_positives < constraint.global_constraint:
+                    lower_bound = scale_pos_weight
+                    scale_pos_weight = (scale_pos_weight + upper_bound)/2
+                else:
+                    upper_bound = scale_pos_weight
+                    scale_pos_weight = (scale_pos_weight + lower_bound)/2
+
+                if abs(upper_bound - lower_bound) < self.tolerance:
+                    #Taking from history the best scale_pos_weight
+                    logger.info("Finding the best estimator from history")
+                    df = pd.DataFrame(self.history) #contains scale_pos_weight, total_positives, is_satisfied
+                    best_estimator_idx = df[df["is_satisfied"]==True]["total_positives"].idxmax()
+                    estimator = df.loc[best_estimator_idx]["estimator"] #highest total_positives while satisfying the constraint
+                    break
+
+                if total_positives == constraint.global_constraint:    
+                    break
+
+            self.base_estimator = copy.deepcopy(estimator)
+        else:
+            self.base_estimator.fit(X, y, **fit_params)
+        return self
+
+    def is_binding(self, X, y, X_test):
+        estimator = copy.deepcopy(self.base_estimator)
+        y_pred = estimator.fit(X, y).predict(X_test)
+        return not is_satisfy_constraint(y_pred, self.constraint)
+
+    def predict(self, X):
+        return self.base_estimator.predict(X)

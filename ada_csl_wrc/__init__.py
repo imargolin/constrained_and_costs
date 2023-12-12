@@ -1,1 +1,1 @@
-from classes import Constraint, AbsoluteConstraint, RelativeConstraint
+from .classes import Constraint, AbsoluteConstraint, RelativeConstraint

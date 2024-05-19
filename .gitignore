@@ -2,3 +2,8 @@
 use_later.py
 delme.py
 data
+./data
+*.feather
+*.csv
+ucp_laisons.pptx
+intuit_data_research.ipynb

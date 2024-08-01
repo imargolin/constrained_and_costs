@@ -7,3 +7,4 @@ data
 *.csv
 ucp_laisons.pptx
 intuit_data_research.ipynb
+.venv

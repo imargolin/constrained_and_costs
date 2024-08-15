@@ -5,6 +5,7 @@ from ortools.linear_solver import pywraplp
 
 from typing import List, Dict, Union, Optional
 from .preparation_utils import prepare_y_hat, repeat_cost_matrix, create_num_vars
+from pulp import LpMaximize , LpProblem , LpVariable , lpSum ,LpBinary, PULP_CBC_CMD
 
 #for binary case
 #global_constraint = {"constraint_type": "absolute", "value": 100}
@@ -168,4 +169,160 @@ class BinarySolver:
         # print("Objective function: ", self.objective_function_value)
         
         return results
+    
+class ItayChenSolverPreprocessIncluded:
+    def __init__(
+            self, 
+            input_dataframe: pd.DataFrame,
+            limits: Dict[str, int],
+            prizes: Optional[Dict[str, float]] = {},
+            ):
+        """
+        input_dataframe: pd.DataFrame, with columns user, credential, provider
+        limits: dict, with provider as keys and limits as values
+        values: optional, dict, with user as keys and values as values, users not in the dict will have a default value of 1
+        """
         
+        self.effective_users = input_dataframe[input_dataframe["provider"].isin(limits.keys())]["user"].unique()
+        self.effective_providers = input_dataframe[input_dataframe["provider"].isin(limits.keys())]["provider"].unique()
+        self.limits = limits
+        
+        #For the solver, not for the finalized solution.
+        self.N = len(self.effective_users)
+        self.M = len(self.effective_providers)
+
+
+        self.prizes = pd.Series(prizes, name="values")
+        effective_W = input_dataframe[(input_dataframe["user"].isin(self.effective_users)) & (input_dataframe["provider"].isin(self.effective_providers))]
+        effective_W = effective_W.groupby(["user", "provider"]).size().unstack(fill_value=0)
+        self.effective_W =  effective_W.reindex(self.effective_users, axis=0).reindex(self.effective_providers, axis=1)
+        self.output_df = input_dataframe[["user"]].drop_duplicates("user").set_index("user").join(self.prizes).fillna(1)
+        self.effective_values = self.output_df["values"].reindex(self.effective_users)
+
+        self.solver = pywraplp.Solver.CreateSolver("SAT")
+
+    def solve(self):
+        R = np.empty(self.N).tolist()
+        for i in range(self.N):
+            R[i] = self.solver.IntVar(0, 1, 'R{}'.format(i))
+        R = np.array(R)
+
+        demand = (R[:, None] * self.effective_W.values).sum(axis=0)
+        for j in range(self.M):
+            self.solver.Add(demand[j] <= self.limits[self.effective_providers[j]])
+
+        objective_function = (R * self.effective_values.values).sum()
+        self.solver.Maximize(objective_function)
+        status = self.solver.Solve()
+
+        results = pd.Series(R, index = self.effective_users).map(lambda x: x.solution_value())
+
+        if status == self.solver.OPTIMAL:
+            print("The problem has an optimal solution")
+        
+        if status == self.solver.INFEASIBLE:
+            print("The problem doesn't have a feasible solution")
+
+        self.output_df["decisions"] = results
+        self.output_df["decisions"] = self.output_df["decisions"].fillna(1)
+        return self.output_df["decisions"]
+
+class ItayChenSolver2:
+    def __init__(
+            self, 
+            input_dataframe: pd.DataFrame,
+            limits: Dict[str, int],
+            prizes: Optional[Dict[str, float]] = {},
+            ):
+        """
+        input_dataframe: pd.DataFrame, with columns user, credential, provider
+        limits: dict, with provider as keys and limits as values
+        prizes: optional, dict, with user as keys and values as values, users not in the dict will have a default value of 1
+        """
+        
+        self.W = input_dataframe.groupby(["user", "provider"]).size().unstack(fill_value=0)
+
+        self.users = self.W.index
+        self.providers = self.W.columns
+        self.limits = pd.Series(limits, name="limits").reindex(self.providers).fillna(float("inf"))
+        self.prizes = pd.Series(prizes, name="prizes").reindex(self.users).fillna(1)
+        
+        #For the solver, not for the finalized solution.
+        self.N, self.M = self.W.shape
+
+        self.solver = pywraplp.Solver.CreateSolver("SAT")
+
+    def solve(self):
+        R = np.empty(self.N).tolist() #The results is a vector, number of users
+        for i in range(self.N):
+            R[i] = self.solver.IntVar(0, 1, 'R{}'.format(i))
+        R = np.array(R)
+
+        demand = (R[:, None] * self.W.values).sum(axis=0)
+        for j in range(self.M):
+            self.solver.Add(demand[j] <= self.limits[self.providers[j]])
+
+        objective_function = (R * self.prizes.values).sum()
+        self.solver.Maximize(objective_function)
+        status = self.solver.Solve()
+
+        self.results = pd.Series(R, index = self.users).map(lambda x: x.solution_value())
+
+        if status == self.solver.OPTIMAL:
+            print("The problem has an optimal solution")
+        
+        if status == self.solver.INFEASIBLE:
+            print("The problem doesn't have a feasible solution")
+
+        return self.results
+    
+class GonenSolver:
+    def __init__(
+            self,
+            input_dataframe: pd.DataFrame,
+            limits: Dict[str, int],
+            prizes: Optional[Dict[str, float]] = {},
+            ):
+        
+        input_dataframe = input_dataframe.set_index("credential")
+        self.W = input_dataframe.groupby(["user", "provider"])["credential_weight"].sum().unstack(fill_value=0)
+        self.users, self.providers = self.W.index, self.W.columns
+        self.credentials = input_dataframe.index.tolist()
+        self.prizes = {user: prizes.get(user, 1) for user in self.users} # if user is not in prizes, then prize is 1
+        self.limits = {provider: limits.get(provider, float("inf")) for provider in self.providers} # filter out providers that are not in the data
+        self.creds_weights = input_dataframe["credential_weight"].to_dict()
+
+        self.user_to_credentials = input_dataframe.groupby("user").apply(lambda x: set(x.index)).to_dict()
+        self.provider_to_credentials = input_dataframe.groupby("provider").apply(lambda x: set(x.index)).to_dict()
+
+        self.solver = LpProblem("ILP_Problem", LpMaximize)
+        
+    def solve(self):
+        x = LpVariable.dicts("x", self.users , cat = LpBinary) # Binary variable for family selection
+        y = LpVariable.dicts("y", [(credential ,provider) for credential in self.credentials for provider in self.providers] ,cat = LpBinary) # Binary variable for item assignment
+
+        self.solver += lpSum(self.prizes[user] * x [user] for user in self.users)
+
+        #Constraints
+
+        # The sum of the weights of the credentials assigned to a provider must be less than or equal to the limit of the provider
+        for provider, limit in self.limits.items():
+            if limit != float("inf"):
+                self.solver += lpSum(self.creds_weights[credential] * y[credential , provider] for credential in self.credentials) <= self.limits[provider]
+                
+        # The sum of the weights of the credentials assigned to a user must be less than or equal to the limit of the user
+        for user, user_credentials in self.user_to_credentials.items():
+            for credential in user_credentials:
+                self.solver += lpSum (y[credential, provider] for provider in self.providers) == x[user]
+
+        # The credentials that are not allowed to be assigned to a provider must be 0
+        set_credentials = set(self.credentials)
+        for provider in self.providers:
+            misalowed_credentials = set_credentials - self.provider_to_credentials[provider]
+            for credential in misalowed_credentials:
+                self.solver += y[credential , provider] == 0
+
+        self.solver.solve(PULP_CBC_CMD(msg=True)) #
+
+        self.results = pd.Series(x).map(lambda x: x.varValue)
+        return self.results
